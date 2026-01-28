@@ -2,7 +2,7 @@
   lib,
   python3Packages,
   fetchFromGitHub,
-  brave,
+  google-chrome,
 }:
 
 python3Packages.buildPythonPackage rec {
@@ -29,16 +29,17 @@ python3Packages.buildPythonPackage rec {
     markdownify
     nodriver
     pymupdf
+    nodriver
   ];
 
   buildInputs = [
-    brave
+    google-chrome
   ];
 
   makeWrapperArgs = [
     "--set"
     "KINDLY_BROWSER_EXECUTABLE_PATH"
-    "${brave}/bin/brave"
+    "${lib.getExe google-chrome}"
   ];
 
   pythonImportsCheck = [ "kindly_web_search_mcp_server" ];
