@@ -17,15 +17,20 @@
       lib = import ./lib { inherit (nixpkgs) lib; };
 
       # Auto-import all packages from pkgs/
-      # Each subdirectory with a default.nix becomes a package
+      # Each subdirectory with a default.nix returns { source, package }
+      # where source is pure data and package is a callable for callPackage
       importPackages =
         pkgs: dir:
         let
           contents = builtins.readDir dir;
           isPackage = name: type: type == "directory" && builtins.pathExists (dir + "/${name}/default.nix");
           packageNames = nixpkgs.lib.filterAttrs isPackage contents;
+          imported = nixpkgs.lib.mapAttrs (name: _: import (dir + "/${name}")) packageNames;
         in
-        nixpkgs.lib.mapAttrs (name: _: pkgs.callPackage (dir + "/${name}") { }) packageNames;
+        {
+          packages = nixpkgs.lib.mapAttrs (name: pkg: pkgs.callPackage pkg.package { }) imported;
+          sources = nixpkgs.lib.mapAttrs (name: pkg: pkg.source) imported;
+        };
 
     in
     flake-utils.lib.eachDefaultSystem (
@@ -35,17 +40,20 @@
           inherit system;
           config.allowUnfree = true;
         };
-        myPackages = importPackages pkgs ./pkgs;
+        imported = importPackages pkgs ./pkgs;
       in
       {
-        packages = myPackages // {
+        packages = imported.packages // {
           default = pkgs.linkFarm "stdlib-all" (
             nixpkgs.lib.mapAttrsToList (name: drv: {
               inherit name;
               path = drv;
-            }) myPackages
+            }) imported.packages
           );
         };
+
+        # Sources as pure data - evaluable without instantiating derivations
+        inherit (imported) sources;
 
         # Dev shell for working on packages in this repo
         devShells.default = pkgs.mkShell {

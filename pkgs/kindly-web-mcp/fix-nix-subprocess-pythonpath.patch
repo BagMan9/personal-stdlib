@@ -1,0 +1,107 @@
+diff --git a/src/kindly_web_search_mcp_server/scrape/nodriver_worker.py b/src/kindly_web_search_mcp_server/scrape/nodriver_worker.py
+index 375dff1..fedc3dc 100644
+--- a/src/kindly_web_search_mcp_server/scrape/nodriver_worker.py
++++ b/src/kindly_web_search_mcp_server/scrape/nodriver_worker.py
+@@ -640,7 +640,8 @@ async def _fetch_html(
+         raise RuntimeError("reuse_browser requested but remote host/port was not provided.")
+ 
+     sandbox_enabled = _resolve_sandbox_enabled()
+-    resolved_browser_executable_path: str | None = None
++    # Always resolve browser path - nodriver needs it even when connecting to pooled browsers
++    resolved_browser_executable_path = _resolve_browser_executable_path(browser_executable_path)
+     is_snap = False
+     attempts = 1
+     base_backoff_seconds = 0.0
+@@ -649,7 +650,6 @@ async def _fetch_html(
+     base_browser_args: list[str] = []
+ 
+     if not reuse_requested:
+-        resolved_browser_executable_path = _resolve_browser_executable_path(browser_executable_path)
+         if resolved_browser_executable_path is None:
+             raise RuntimeError(
+                 "No Chromium-based browser executable found. "
+@@ -697,7 +697,7 @@ async def _fetch_html(
+             {
+                 "browser_executable_path": resolved_browser_executable_path or "",
+                 "sandbox_enabled": sandbox_enabled,
+-                "is_snap": False,
++                "is_snap": _is_snap_browser(resolved_browser_executable_path) if resolved_browser_executable_path else False,
+                 "attempts": attempts,
+                 "backoff_seconds": base_backoff_seconds,
+                 "devtools_ready_timeout_seconds": devtools_ready_timeout_seconds,
+@@ -913,9 +913,9 @@ async def _fetch_html(
+             _emit_diag(
+                 "worker.reuse_connect",
+                 "Connecting to pooled Chromium",
+-                {"host": remote_host, "port": remote_port},
++                {"host": remote_host, "port": remote_port, "browser_executable_path": resolved_browser_executable_path or ""},
+             )
+-            browser = await uc.start(host=remote_host, port=remote_port)
++            browser = await uc.start(host=remote_host, port=remote_port, browser_executable_path=resolved_browser_executable_path)
+             _emit_diag(
+                 "worker.browser_started",
+                 "Nodriver connected to pooled browser",
+@@ -1003,11 +1003,11 @@ async def _fetch_html(
+                     )
+ 
+                     # Connect Nodriver to the already-running browser instance (do not spawn another).
+-                    browser = await uc.start(host=host, port=port)
++                    browser = await uc.start(host=host, port=port, browser_executable_path=resolved_browser_executable_path)
+                     _emit_diag(
+                         "worker.browser_started",
+                         "Nodriver connected to browser",
+-                        {"host": host, "port": port},
++                        {"host": host, "port": port, "browser_executable_path": resolved_browser_executable_path or ""},
+                     )
+                     last_start_error = None
+                     break
+diff --git a/src/kindly_web_search_mcp_server/scrape/universal_html.py b/src/kindly_web_search_mcp_server/scrape/universal_html.py
+index f2459a8..05c1dea 100644
+--- a/src/kindly_web_search_mcp_server/scrape/universal_html.py
++++ b/src/kindly_web_search_mcp_server/scrape/universal_html.py
+@@ -56,22 +56,35 @@ def _is_probably_pdf_url(url: str) -> bool:
+ 
+ def _maybe_add_src_to_pythonpath(env: dict[str, str]) -> dict[str, str]:
+     """
+-    Ensure subprocesses can import this package when running from source.
++    Ensure subprocesses can import this package when running from source
++    or when running in environments (like Nix) that modify sys.path at runtime.
+ 
+     The example script modifies `sys.path` in-process (to include `./src`) so it can be executed
+-    without installing the package. Subprocesses do not inherit that mutation, so the universal
+-    loader sets `PYTHONPATH` to include `./src` when it exists.
++    without installing the package. Similarly, Nix's Python packaging uses site.addsitedir() in
++    entry point wrappers to add dependencies, but subprocesses spawned with sys.executable don't
++    inherit those paths. This function propagates the current sys.path to PYTHONPATH.
+     """
+     try:
+-        # Anchor to this file's physical location instead of relying on cwd.
+-        # When running from source, this resolves to `<repo>/src`.
++        existing = env.get("PYTHONPATH", "")
++        parts: list[str] = []
++
++        # Add the source directory for development mode
+         src_dir = Path(__file__).resolve().parents[2]
+         if src_dir.is_dir():
+-            existing = env.get("PYTHONPATH", "")
+-            parts = [str(src_dir)]
+-            if existing:
+-                parts.append(existing)
+-            env["PYTHONPATH"] = os.pathsep.join(parts)
++            parts.append(str(src_dir))
++
++        # Propagate sys.path entries to subprocess - important for Nix and similar
++        # packaging systems that add site-packages at runtime via site.addsitedir()
++        for path in sys.path:
++            if path and path not in parts:
++                parts.append(path)
++
++        if existing:
++            for path in existing.split(os.pathsep):
++                if path and path not in parts:
++                    parts.append(path)
++
++        env["PYTHONPATH"] = os.pathsep.join(parts)
+         return env
+     except Exception:
+         return env
